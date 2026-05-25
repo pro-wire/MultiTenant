@@ -53,16 +53,20 @@ class MultiTenant extends WireData implements Module {
 	 *
 	 * When no tenant matches the current hostname the module leaves all
 	 * ProcessWire paths at their defaults (i.e. /site/assets/) and registers
-	 * wire('tenant') as null.
-	 *
-	 * @throws WireException If the platform config file is missing.
+	 * wire('tenant') as null. If tenants.php is absent the module logs an
+	 * error, registers wire('tenant') as null, and continues — this keeps the
+	 * platform admin reachable even after an accidental file deletion.
 	 */
 	public function init(): void {
 		$host       = $this->resolveHost();
 		$configFile = $this->wire('config')->paths->site . 'tenants.php';
 
 		if (!is_file($configFile)) {
-			throw new WireException('MultiTenant: missing config file at: ' . $configFile);
+			// Degrade gracefully so the platform admin remains reachable even if
+			// tenants.php was accidentally deleted. Log the problem prominently.
+			$this->wire('log')->error('MultiTenant: missing config file: ' . $configFile);
+			$this->wire('tenant', null);
+			return;
 		}
 
 		$this->platformConfig = require $configFile;
@@ -130,12 +134,22 @@ class MultiTenant extends WireData implements Module {
 	 *
 	 * Only file-system paths and asset URLs are set here. DB credentials must
 	 * already be applied in /site/config.php before this point (see README).
+	 *
+	 * storagePath is treated as relative to the ProcessWire root (leading and
+	 * trailing slashes are stripped). The relative form is used for URL
+	 * construction so that the absolute filesystem path is never embedded in
+	 * a URL.
 	 */
 	protected function applyTenantPaths(): void {
-		$config      = $this->wire('config');
-		$storageBase = rtrim((string) $this->tenant->get('storagePath'), '/') . '/';
-		$storageBase = $config->paths->root . $storageBase;
-		$storageBase = str_replace('//', '/', $storageBase); // Prevent double-slashes
+		$config  = $this->wire('config');
+
+		// Strip all leading/trailing slashes to obtain a clean relative path
+		// segment (e.g. '/storage/example/' → 'storage/example/').
+		$relPath = trim((string) $this->tenant->get('storagePath'), '/') . '/';
+
+		// Absolute filesystem path: collapse any consecutive slashes that may
+		// result from root already ending with '/'.
+		$storageBase = preg_replace('#/+#', '/', rtrim($config->paths->root, '/') . '/' . $relPath);
 
 		// Redirect the four writable directory groups to tenant storage.
 		$config->paths->assets   = $storageBase . 'assets/';
@@ -148,8 +162,9 @@ class MultiTenant extends WireData implements Module {
 		$config->paths->files   = $config->paths->assets . 'files/';
 		$config->paths->backups = $config->paths->assets . 'backups/';
 
-		// Assets URL
-		$assetsUrl = $config->urls->root . $storageBase . 'assets/';
+		// Assets URL: use the RELATIVE path only — never the absolute
+		// filesystem path — to produce a valid HTTP URL.
+		$assetsUrl = rtrim($config->urls->root, '/') . '/' . $relPath . 'assets/';
 		$config->urls->assets = $assetsUrl;
 		$config->urls->files  = $assetsUrl . 'files/';
 
@@ -176,7 +191,9 @@ class MultiTenant extends WireData implements Module {
 			}
 
 			// mkdir() can race with another request; re-check after the call.
-			$created = mkdir($dir, 0775, /* recursive */ true);
+			// Use the site-configured directory permission for consistency.
+			$mode    = octdec($this->wire('config')->chmodDir);
+			$created = mkdir($dir, $mode, /* recursive */ true);
 
 			if (!$created && !is_dir($dir)) {
 				throw new WireException('MultiTenant: could not create directory: ' . $dir);

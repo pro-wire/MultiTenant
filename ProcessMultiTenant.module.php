@@ -83,16 +83,27 @@ class ProcessMultiTenant extends Process {
       $dbName    = $sanitizer->entities((string) ($tenant['dbName'] ?? ''));
       $storage   = $sanitizer->entities((string) ($tenant['storagePath'] ?? ''));
       $editUrl   = $pageUrl . 'edit/?tenant_id=' . $id;
-      $deleteUrl = $pageUrl . 'delete/?tenant_id=' . $id;
 
-      // JS confirm message — single-quote-safe via addslashes.
-      $confirmMsg = addslashes(sprintf($this->_('Delete tenant "%s"? This cannot be undone.'), $id));
+      // Delete uses a POST form + CSRF token to prevent CSRF attacks.
+      // A GET link would allow any page to trigger deletion by tricking an
+      // authenticated admin into following a crafted URL.
+      $csrf         = $this->wire()->session->CSRF;
+      $confirmMsg   = addslashes(sprintf($this->_('Delete tenant "%s"? This cannot be undone.'), $id));
+      $deleteAction = $pageUrl . 'delete/';
+
+      $deleteForm = '<form method="post" action="' . $deleteAction . '" style="display:inline"'
+        . ' onsubmit="return confirm(\'' . $confirmMsg . '\')">'
+        . '<input type="hidden" name="tenant_id" value="' . $id . '">'
+        . '<input type="hidden" name="' . $sanitizer->entities($csrf->getTokenName()) . '"'
+        . ' value="' . $sanitizer->entities($csrf->getTokenValue()) . '">'
+        . '<button type="submit"'
+        . ' style="background:none;border:none;color:#c00;cursor:pointer;padding:0;font:inherit">'
+        . '<i class="fa fa-trash"></i> ' . $this->_('Delete')
+        . '</button></form>';
 
       $actions = '<a href="' . $editUrl . '"><i class="fa fa-pencil"></i> ' . $this->_('Edit') . '</a>'
         . ' &nbsp; '
-        . '<a href="' . $deleteUrl . '" style="color:#c00" '
-        . 'onclick="return confirm(\'' . $confirmMsg . '\')">'
-        . '<i class="fa fa-trash"></i> ' . $this->_('Delete') . '</a>';
+        . $deleteForm;
 
       // First column value linked to edit page.
       $table->row([
@@ -191,15 +202,27 @@ class ProcessMultiTenant extends Process {
   }
 
   /**
-   * Delete a tenant by ID (GET request, then redirect to list).
+   * Delete a tenant by ID (POST request only, CSRF-protected).
    *
-   * The calling link must include a JavaScript confirm() to prevent accidents.
+   * Accepts only POST submissions from the inline delete form rendered in
+   * ___execute(). GET requests are silently redirected to the tenant list.
    */
   public function ___executeDelete(): string {
     $input     = $this->wire()->input;
     $sanitizer = $this->wire()->sanitizer;
     $pageUrl   = $this->wire()->page->url;
-    $tenantId  = $sanitizer->name((string) ($input->get('tenant_id') ?? ''));
+
+    // Reject non-POST requests — a GET to this URL is either a direct visit
+    // or a CSRF attempt; neither should delete anything.
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->wire()->session->redirect($pageUrl);
+      return '';
+    }
+
+    // Validate the CSRF token embedded in the delete form.
+    $this->wire()->session->CSRF->validate();
+
+    $tenantId = $sanitizer->name((string) ($input->post('tenant_id') ?? ''));
 
     if ($tenantId === '') {
       $this->error($this->_('No tenant ID specified.'));
@@ -446,6 +469,35 @@ class ProcessMultiTenant extends Process {
       return $form->render();
     }
 
+    // Validate each domain as a legal hostname (labels separated by dots,
+    // each label: 1–63 chars of [a-z0-9-], not starting/ending with a hyphen).
+    foreach ($domains as $domain) {
+      if (!preg_match('/^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$/', $domain)) {
+        $this->error(sprintf($this->_('"%s" is not a valid hostname.'), $sanitizer->entities($domain)));
+        return $form->render();
+      }
+    }
+
+    // Ensure no domain is already claimed by another tenant. Two tenants
+    // sharing a domain silently hides one of them (first-match wins in
+    // resolveTenant()), so we reject the duplicate here.
+    $currentId = $isNew ? '' : ($originalId !== '' ? $originalId : $newId);
+    foreach ($domains as $domain) {
+      foreach ($tenants as $existingTenant) {
+        // Skip the tenant being edited — it may keep its own domains.
+        if (!$isNew && (string) ($existingTenant['id'] ?? '') === $currentId) continue;
+        $existingDomains = array_map('strtolower', (array) ($existingTenant['domains'] ?? []));
+        if (in_array($domain, $existingDomains, true)) {
+          $this->error(sprintf(
+            $this->_('Domain "%s" is already registered to tenant "%s".'),
+            $sanitizer->entities($domain),
+            $sanitizer->entities((string) ($existingTenant['id'] ?? ''))
+          ));
+          return $form->render();
+        }
+      }
+    }
+
     // Retain existing password when the field was left blank.
     $dbPass = ($dbPassRaw !== '') ? $dbPassRaw : (string) ($existing['dbPass'] ?? '');
 
@@ -514,7 +566,10 @@ class ProcessMultiTenant extends Process {
   /**
    * Write all tenants back to /site/tenants.php as a PHP return array.
    *
-   * Values are escaped with addslashes() for safe embedding in single-quoted strings.
+   * Values are serialised with var_export() which handles all PHP string
+   * edge cases (backslashes, single quotes, multi-byte sequences) correctly.
+   * file_put_contents() is called with LOCK_EX to prevent file corruption
+   * when two admin sessions save simultaneously.
    *
    * @param  array<int, array<string, mixed>> $tenants
    * @throws WireException If the file cannot be written.
@@ -525,19 +580,23 @@ class ProcessMultiTenant extends Process {
     $lines = ["<?php", "return [", "  'tenants' => ["];
 
     foreach ($tenants as $t) {
-      $domainItems = array_map('addslashes', (array) ($t['domains'] ?? []));
-      $domainsStr  = empty($domainItems) ? '' : ("'" . implode("', '", $domainItems) . "'");
+      // Build domains list as var_export'd scalars: 'a', 'b', ...
+      $domainItems = array_map(
+        fn(string $d): string => var_export($d, true),
+        (array) ($t['domains'] ?? [])
+      );
+      $domainsStr = implode(', ', $domainItems);
 
       $lines[] = "    [";
-      $lines[] = "      'id'          => '" . addslashes((string) ($t['id'] ?? '')) . "',";
-      $lines[] = "      'title'       => '" . addslashes((string) ($t['title'] ?? '')) . "',";
+      $lines[] = "      'id'          => " . var_export((string) ($t['id'] ?? ''), true) . ",";
+      $lines[] = "      'title'       => " . var_export((string) ($t['title'] ?? ''), true) . ",";
       $lines[] = "      'domains'     => [" . $domainsStr . "],";
-      $lines[] = "      'dbHost'      => '" . addslashes((string) ($t['dbHost'] ?? '')) . "',";
+      $lines[] = "      'dbHost'      => " . var_export((string) ($t['dbHost'] ?? ''), true) . ",";
       $lines[] = "      'dbPort'      => " . (int) ($t['dbPort'] ?? 3306) . ",";
-      $lines[] = "      'dbName'      => '" . addslashes((string) ($t['dbName'] ?? '')) . "',";
-      $lines[] = "      'dbUser'      => '" . addslashes((string) ($t['dbUser'] ?? '')) . "',";
-      $lines[] = "      'dbPass'      => '" . addslashes((string) ($t['dbPass'] ?? '')) . "',";
-      $lines[] = "      'storagePath' => '" . addslashes((string) ($t['storagePath'] ?? '')) . "',";
+      $lines[] = "      'dbName'      => " . var_export((string) ($t['dbName'] ?? ''), true) . ",";
+      $lines[] = "      'dbUser'      => " . var_export((string) ($t['dbUser'] ?? ''), true) . ",";
+      $lines[] = "      'dbPass'      => " . var_export((string) ($t['dbPass'] ?? ''), true) . ",";
+      $lines[] = "      'storagePath' => " . var_export((string) ($t['storagePath'] ?? ''), true) . ",";
       $lines[] = "    ],";
     }
 
@@ -545,7 +604,12 @@ class ProcessMultiTenant extends Process {
     $lines[] = "];";
     $lines[] = "";
 
-    if (file_put_contents($configFile, implode("\n", $lines)) === false) {
+    // LOCK_EX ensures the write is atomic under concurrent admin saves,
+    // preventing partial reads that would cause a PHP parse error on every
+    // subsequent request.
+    $written = file_put_contents($configFile, implode("\n", $lines), LOCK_EX);
+
+    if ($written === false) {
       throw new WireException('ProcessMultiTenant: could not write to: ' . $configFile);
     }
   }

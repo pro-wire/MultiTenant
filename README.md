@@ -26,34 +26,21 @@ The `MultiTenant` module is the runtime layer for tenant isolation.
 
 ### Why `site/config.php` must handle DB switching
 
-ProcessWire establishes the database connection during bootstrap before module `init()` runs. Therefore the tenant database credentials must be applied in `/site/config.php` using the bundled `config.example.php` snippet.
+ProcessWire establishes the database connection during bootstrap before module `init()` runs. Therefore the tenant database credentials must be applied in `/site/config.php` using the bundled `MultiTenantConfig` class.
 
-Use the snippet before any static `$config->db*` values:
+The logic lives in `MultiTenantConfig.php` (inside the module folder). It is a plain PHP class — no namespace, no ProcessWire dependencies — so it can be safely loaded with `require_once` before ProcessWire bootstraps.
+
+Add these two lines to `/site/config.php`, before any static `$config->db*` assignments:
 
 ```php
-$multitenantFile = __DIR__ . '/tenants.php';
-if (is_file($multitenantFile)) {
-    $multitenantConfig = require $multitenantFile;
-
-    $host = strtolower(explode(':', $_SERVER['HTTP_HOST'] ?? 'localhost')[0]);
-    $host = preg_replace('/[^a-z0-9.\-]/', '', $host) ?: 'localhost';
-
-    foreach ($multitenantConfig['tenants'] as $tenant) {
-        $domains = array_map('strtolower', $tenant['domains'] ?? []);
-
-        if (in_array($host, $domains, true)) {
-            $config->dbName = $tenant['dbName'];
-            $config->dbUser = $tenant['dbUser'];
-            $config->dbPass = $tenant['dbPass'];
-            $config->dbHost = $tenant['dbHost'] ?? 'localhost';
-            $config->dbPort = $tenant['dbPort'] ?? 3306;
-            break;
-        }
-    }
-
-    unset($multitenantConfig, $host, $tenant, $domains);
-}
+require_once __DIR__ . '/modules/MultiTenant/MultiTenantConfig.php';
+(new MultiTenantConfig(__DIR__ . '/tenants.php', $config))->apply();
 ```
+
+`MultiTenantConfig::apply()` handles:
+
+- registering every tenant domain in `$config->httpHosts` (prevents ProcessWire's host-validation 403)
+- applying the matching tenant's DB credentials to `$config`
 
 ### Install the bootstrap module
 
