@@ -1,7 +1,7 @@
 <?php
 
 /**
- * MultiTenantConfig — Tenant DB-switching helper for /site/config.php.
+ * MultiTenantSiteConfig — Tenant DB-switching helper for /site/config.php.
  *
  * This is intentionally a plain PHP class with no namespace and no ProcessWire
  * dependencies. It is required early in /site/config.php, before ProcessWire
@@ -15,10 +15,10 @@
  *
  * Usage in /site/config.php (before any static $config->db* assignments):
  *
- *   require_once __DIR__ . '/modules/MultiTenant/MultiTenantConfig.php';
- *   (new MultiTenantConfig(__DIR__ . '/tenants.php', $config))->apply();
+ *   require_once __DIR__ . '/modules/MultiTenant/MultiTenantSiteConfig.php';
+ *   (new MultiTenantSiteConfig(__DIR__ . '/tenants.php', $config))->apply();
  */
-class MultiTenantConfig {
+class MultiTenantSiteConfig {
   /**
    * @param string $tenantsFile Absolute path to /site/tenants.php
    * @param object $config      The ProcessWire $config object from config.php

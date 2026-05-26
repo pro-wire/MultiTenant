@@ -33,7 +33,7 @@ class ProcessMultiTenant extends Process {
       'page'       => [
         'name'  => 'multi-tenant',
         'title' => 'Multi-Tenant',
-        'parent' => 'setup',
+        'parent' => 'system',
       ],
       'singular' => true,
       'autoload' => false,

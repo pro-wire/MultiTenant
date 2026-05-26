@@ -21,6 +21,6 @@
 // Add the following two lines to /site/config.php
 // ---------------------------------------------------------------------------
 
-require_once __DIR__ . '/modules/MultiTenant/MultiTenantConfig.php';
+require_once __DIR__ . '/modules/MultiTenant/MultiTenantSiteConfig.php';
 
-(new MultiTenantConfig(__DIR__ . '/tenants.php', $config))->apply();
+(new MultiTenantSiteConfig(__DIR__ . '/tenants.php', $config))->apply();

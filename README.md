@@ -26,18 +26,18 @@ The `MultiTenant` module is the runtime layer for tenant isolation.
 
 ### Why `site/config.php` must handle DB switching
 
-ProcessWire establishes the database connection during bootstrap before module `init()` runs. Therefore the tenant database credentials must be applied in `/site/config.php` using the bundled `MultiTenantConfig` class.
+ProcessWire establishes the database connection during bootstrap before module `init()` runs. Therefore the tenant database credentials must be applied in `/site/config.php` using the bundled `MultiTenantSiteConfig` class.
 
-The logic lives in `MultiTenantConfig.php` (inside the module folder). It is a plain PHP class — no namespace, no ProcessWire dependencies — so it can be safely loaded with `require_once` before ProcessWire bootstraps.
+The logic lives in `MultiTenantSiteConfig.php` (inside the module folder). It is a plain PHP class — no namespace, no ProcessWire dependencies — so it can be safely loaded with `require_once` before ProcessWire bootstraps.
 
 Add these two lines to `/site/config.php`, before any static `$config->db*` assignments:
 
 ```php
-require_once __DIR__ . '/modules/MultiTenant/MultiTenantConfig.php';
-(new MultiTenantConfig(__DIR__ . '/tenants.php', $config))->apply();
+require_once __DIR__ . '/modules/MultiTenant/MultiTenantSiteConfig.php';
+(new MultiTenantSiteConfig(__DIR__ . '/tenants.php', $config))->apply();
 ```
 
-`MultiTenantConfig::apply()` handles:
+`MultiTenantSiteConfig::apply()` handles:
 
 - registering every tenant domain in `$config->httpHosts` (prevents ProcessWire's host-validation 403)
 - applying the matching tenant's DB credentials to `$config`
